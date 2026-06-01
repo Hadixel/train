@@ -367,7 +367,7 @@ class TrainWatcherEngine:
                             if self.config.get("send_errors_to_telegram", True):
                                 await self.send_notification(f"⚠️ {err_msg}", silent=True)
 
-                    # Custom URLs Check
+                    # Custom URLs Check (SafarMarket and Raja)
                     for i, item in enumerate(self.config.get("custom_urls", [])):
                         url = item["url"]
                         is_enabled = self.config.get("custom_urls_state", {}).get(url, True)
@@ -378,9 +378,14 @@ class TrainWatcherEngine:
                         resolved_url = self.resolve_custom_url(url, jalali, greg, origin_data, dest_data)
                         print(self.get_log("checking", domain=domain))
                         
-                        target_page = proxy_context.new_page() if domain == "raja.ir" else page_direct
-                        
+                        target_page = None
                         try:
+                            # ساخت تب موازی مخصوص رجا به صورت ناهمگام با استفاده از کلمه کلیدی await
+                            if domain == "raja.ir":
+                                target_page = await proxy_context.new_page()
+                            else:
+                                target_page = page_direct
+                                
                             if domain in ["raja.ir", "safarmarket.com"] and domain not in target_page.url:
                                 try:
                                     await target_page.goto(f"https://{domain}", wait_until="domcontentloaded", timeout=25000)
@@ -405,6 +410,13 @@ class TrainWatcherEngine:
                             print(f"-> {err_msg}")
                             if self.config.get("send_errors_to_telegram", True):
                                 await self.send_notification(f"⚠️ {err_msg}", silent=True)
+                        finally:
+                            # بستن اصولی تب رجا برای آزادسازی رم (RAM) سرور Railway پس از بررسی
+                            if domain == "raja.ir" and target_page:
+                                try:
+                                    await target_page.close()
+                                except:
+                                    pass
 
                 print(self.get_log("waiting", interval=interval))
                 await asyncio.sleep(interval)
