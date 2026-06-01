@@ -1,0 +1,60 @@
+{
+    "origin": "Mashhad",
+    "destination": "Kerman",
+    "start_date": "1405-03-16",
+    "end_date": "1405-03-16",
+    "enable_date_range": false,
+    "telegram_token": "8847665134:AAElhdamxIpPvZbNlx-xdKNWgnHOQRqBb0c",
+    "telegram_chat_id": "269524898",
+    "sms_api_key": "",
+    "sms_line_number": "",
+    "sms_mobiles": [],
+    "refresh_interval": "60",
+    "enable_alibaba": true,
+    "enable_flytoday": true,
+    "enable_mrbilit": true,
+    "use_proxy": true,
+    "language": "fa",
+    "send_errors_to_telegram": true,
+    "custom_urls": [
+        {
+            "url": "raja.ir",
+            "label": "Raja Official Search"
+        },
+        {
+            "url": "safarmarket.com",
+            "label": "safar market"
+        }
+    ],
+    "detect_words": [
+        {
+            "query": "رزرو بلیت",
+            "label": "دکمه خرید رجا یا علی‌بابا",
+            "is_css": false
+        },
+        {
+            "query": "رزرو آنلاین",
+            "label": "دکمه خرید مستربلیت",
+            "is_css": false
+        },
+        {
+            "query": "جزئیات و خرید",
+            "label": "دکمه خرید فلای‌تودی",
+            "is_css": false
+        },
+        {
+            "query": "صندلی",
+            "label": "تعداد صندلی باقی‌مانده",
+            "is_css": false
+        },
+        {
+            "query": "باقیمانده",
+            "label": "بلیت باقی‌مانده فلای‌تودی یا علی‌بابا",
+            "is_css": false
+        }
+    ],
+    "custom_urls_state": {
+        "raja.ir": true,
+        "safarmarket.com": true
+    }
+}
