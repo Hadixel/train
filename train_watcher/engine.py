@@ -37,11 +37,7 @@ LOGS = {
         "no_dates": "[-] Error: No valid dates found.",
         "no_proxy_warning": "⚠️ Warning: No working Iran HTTP proxy found! Alibaba and Raja checks might fail on foreign cloud server.",
         "proxy_fallback": "[*] Attempting fallback proxy source (ProxyScrape - HTTP only)...",
-        "proxy_retry_pre_cycle": "[*] No active proxy in use. Re-attempting to establish a proxy connection before cycle starts...",
-        "btn_check": "🔄 Check Now",
-        "btn_pause": "⏸️ Pause",
-        "btn_resume": "▶️ Resume",
-        "btn_config": "ℹ️ Config"
+        "proxy_retry_pre_cycle": "[*] No active proxy in use. Re-attempting to establish a proxy connection before cycle starts..."
     },
     "fa": {
         "config_ok": "[✓] فایل تنظیمات با موفقیت بارگذاری شد.",
@@ -61,11 +57,7 @@ LOGS = {
         "no_dates": "[-] خطایی رخ داد: تاریخ‌های معتبر وجود ندارند.",
         "no_proxy_warning": "⚠️ هشدار: پروکسی فعال HTTP ایران پیدا نشد! بررسی علی‌بابا و رجا روی سرور خارج احتمالاً با خطا مواجه خواهد شد.",
         "proxy_fallback": "[*] در حال تلاش برای دریافت پروکسی از منبع پشتیبان مخصوص پروتکل HTTP...",
-        "proxy_retry_pre_cycle": "[*] پروکسی فعالی در حال استفاده نیست. در حال تلاش مجدد برای برقراری اتصال پروکسی پیش از شروع دور جدید...",
-        "btn_check": "🔄 بررسی فوری",
-        "btn_pause": "⏸️ توقف",
-        "btn_resume": "▶️ شروع مجدد",
-        "btn_config": "ℹ️ تنظیمات"
+        "proxy_retry_pre_cycle": "[*] پروکسی فعالی در حال استفاده نیست. در حال تلاش مجدد برای برقراری اتصال پروکسی پیش از شروع دور جدید..."
     }
 }
 
@@ -85,14 +77,9 @@ class TrainWatcherEngine:
         self.lang = self.config.get("language", "en")
         print(self.get_log("config_ok"))
         
-        # متغیرهای پایش وضعیت زنده داشبورد تلگرام
-        self.site_status_cache = {}  
-        self.site_states = {}        
-        self.status_message_id = None 
-
-        # متغیرهای شنود منوی کنترل تلگرام
-        self.is_paused = False
-        self.trigger_immediate_check = False
+        self.site_status_cache = {}
+        self.site_states = {}
+        self.status_message_id = None
 
     def get_log(self, key, **kwargs):
         text = LOGS[self.lang].get(key, "")
@@ -128,92 +115,6 @@ class TrainWatcherEngine:
         print(f"\n[ALERT] {message}\n")
         return await self.send_telegram_api("sendMessage", {"text": message}, silent=silent)
 
-    async def telegram_polling_loop(self):
-        """شنود مداوم دکمه‌های کنترل و دستورات دریافتی از تلگرام در پس‌زمینه"""
-        offset = 0
-        token = self.config.get("telegram_token")
-        if not token:
-            return
-            
-        print("[*] Starting Telegram Update Polling loop...")
-        loop = asyncio.get_event_loop()
-        
-        while True:
-            try:
-                url = f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&timeout=10"
-                def fetch():
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=15) as r:
-                        return json.loads(r.read().decode())
-                        
-                res = await loop.run_in_executor(None, fetch)
-                if res.get("ok") and res.get("result"):
-                    for update in res["result"]:
-                        offset = update["update_id"] + 1
-                        await self.handle_telegram_update(update)
-            except:
-                pass
-            await asyncio.sleep(1)
-
-    async def handle_telegram_update(self, update):
-        target_chat_id = str(self.config.get("telegram_chat_id"))
-        
-        # ۱. هندل کردن دستورات متنی متداول
-        if "message" in update:
-            msg = update["message"]
-            text = msg.get("text", "").strip()
-            chat_id = str(msg.get("chat", {}).get("id"))
-            
-            if chat_id != target_chat_id:
-                return
-                
-            if text in ["/start", "/dashboard"]:
-                self.status_message_id = None
-                await self.publish_dashboard(self.config["start_date"])
-            elif text == "/pause":
-                self.is_paused = True
-                await self.send_notification("⏸️ Monitoring has been PAUSED.")
-                await self.publish_dashboard(self.config["start_date"])
-            elif text == "/resume":
-                self.is_paused = False
-                await self.send_notification("▶️ Monitoring has been RESUMED.")
-                await self.publish_dashboard(self.config["start_date"])
-
-        # ۲. هندل کردن کلیک روی دکمه‌های شیشه‌ای داشبورد
-        elif "callback_query" in update:
-            cb = update["callback_query"]
-            data = cb.get("data")
-            cb_id = cb.get("id")
-            chat_id = str(cb.get("message", {}).get("chat", {}).get("id"))
-            
-            if chat_id != target_chat_id:
-                return
-                
-            # ارسال جواب تایید برای برداشته شدن لودینگ دکمه در تلگرام
-            await self.send_telegram_api("answerCallbackQuery", {"callback_query_id": cb_id})
-            
-            if data == "trigger_check":
-                if self.is_paused:
-                    await self.send_notification("⚠️ Bot is paused. Please resume first.", silent=True)
-                else:
-                    self.trigger_immediate_check = True
-                    
-            elif data == "toggle_pause":
-                self.is_paused = not self.is_paused
-                status_str = "PAUSED ⏸️" if self.is_paused else "RESUMED ▶️"
-                await self.send_notification(f"Bot has been {status_str}", silent=True)
-                await self.publish_dashboard(self.config["start_date"])
-                
-            elif data == "show_config":
-                cfg_text = (
-                    "ℹ️ Active Configuration:\n"
-                    f"Origin: {self.config.get('origin')}\n"
-                    f"Destination: {self.config.get('destination')}\n"
-                    f"Date: {self.config.get('start_date')}\n"
-                    f"Interval: {self.config.get('refresh_interval')}s"
-                )
-                await self.send_notification(cfg_text, silent=True)
-
     async def update_site_status(self, site_name, is_online, details_text):
         prev_state = self.site_states.get(site_name, "UNKNOWN")
         current_state = "ONLINE" if is_online else "OFFLINE"
@@ -222,7 +123,6 @@ class TrainWatcherEngine:
         self.site_status_cache[site_name] = f"{status_symbol} {site_name}: {details_text}"
         self.site_states[site_name] = current_state
         
-        # صادر کردن هشدار صوتی و پیام جدید فقط در زمان قطع یا وصل شدن فیزیکی اتصال (جلوگیری از اسپم تکراری)
         if prev_state != "UNKNOWN" and prev_state != current_state:
             if current_state == "OFFLINE":
                 alert_msg = f"🔴 ALERT: Connection LOST to {site_name}!\nDetails: {details_text}"
@@ -250,8 +150,7 @@ class TrainWatcherEngine:
             "-----------------------------------\n"
             f"🔄 Last Update: {timestamp}\n"
             f"📍 Route: {origin} ⇄ {destination}\n"
-            f"📅 Target Date: {current_date}\n"
-            f"⚡ Mode: {'PAUSED ⏸️' if self.is_paused else 'RUNNING 🏃‍♂️'}\n\n"
+            f"📅 Target Date: {current_date}\n\n"
             "🌐 Sites Status:\n"
         )
         
@@ -260,34 +159,16 @@ class TrainWatcherEngine:
             
         dashboard_text += f"\n🔌 Connection: {proxy_info}"
         
-        # ساخت بدنه منوی دکمه‌های شیشه‌ای برای الصاق به پیام
-        t = LOGS[self.lang]
-        pause_btn_txt = t["btn_resume"] if self.is_paused else t["btn_pause"]
-        
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": t["btn_check"], "callback_data": "trigger_check"},
-                    {"text": pause_btn_txt, "callback_data": "toggle_pause"}
-                ],
-                [
-                    {"text": t["btn_config"], "callback_data": "show_config"}
-                ]
-            ]
-        }
-        
-        params = {
-            "text": dashboard_text,
-            "reply_markup": json.dumps(keyboard)
-        }
-        
         if self.status_message_id is None:
-            msg_id = await self.send_telegram_api("sendMessage", params, silent=True)
+            msg_id = await self.send_telegram_api("sendMessage", {"text": dashboard_text}, silent=True)
             if msg_id:
                 self.status_message_id = msg_id
         else:
-            params["message_id"] = self.status_message_id
-            await self.send_telegram_api("editMessageText", params, silent=True)
+            await self.send_telegram_api(
+                "editMessageText", 
+                {"message_id": self.status_message_id, "text": dashboard_text}, 
+                silent=True
+            )
 
     async def fetch_and_test_iran_proxy(self):
         print(self.get_log("searching_proxy"))
@@ -319,7 +200,8 @@ class TrainWatcherEngine:
                     req = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req, timeout=8) as r:
                         return r.read().decode().strip().split("\n")
-                raw_proxies = await loop.run_in_executor(None, fallback_url)
+                # اصلاح‌شده: اجرای تابع دریافت پشتیبان به جای متغیر آدرس متنی
+                raw_proxies = await loop.run_in_executor(None, fetch_fallback)
                 for p in raw_proxies:
                     p = p.strip()
                     if p and ":" in p:
@@ -483,14 +365,20 @@ class TrainWatcherEngine:
                         page_proxy = await proxy_context.new_page()
                         proxy_failures = 0
                         
-                        # حذف نوتیفیکیشن هشدار پروکسی‌های چرخشی برای جلوگیری از اسپم (اکنون در منو نشان داده می‌شود)
-                        print(f"🟢 Connected to active Iran HTTP proxy: {p_url}")
+                        success_msg = f"🟢 Connected to active Iran HTTP proxy: {p_url}"
+                        print(success_msg)
+                        if self.config.get("send_errors_to_telegram", True):
+                            await self.send_notification(success_msg, silent=True)
                     else:
                         proxy_url = None
                         proxy_context = direct_context
                         page_proxy = await direct_context.new_page()
                         proxy_failures = 0
-                        print(self.get_log("no_proxy_warning"))
+                        
+                        warning_msg = self.get_log("no_proxy_warning")
+                        print(warning_msg)
+                        if self.config.get("send_errors_to_telegram", True):
+                            await self.send_notification(warning_msg, silent=True)
 
             if self.config.get("use_proxy", True) or custom_proxy:
                 await refresh_proxy_connection()
@@ -500,15 +388,7 @@ class TrainWatcherEngine:
                 page_proxy = await direct_context.new_page()
                 print("[*] Running in direct connection mode (No proxy).")
             
-            # راه‌اندازی سشن شنود دستورات و دکمه‌های تلگرام به صورت پس‌زمینه
-            asyncio.create_task(self.telegram_polling_loop())
-
             while True:
-                # بررسی وضعیت متوقف کردن ربات از طریق دکمه تلگرام
-                if self.is_paused:
-                    await asyncio.sleep(4)
-                    continue
-
                 dates = self.get_date_list()
                 if not dates:
                     print(self.get_log("no_dates"))
@@ -519,9 +399,6 @@ class TrainWatcherEngine:
                     await refresh_proxy_connection()
                 
                 for jalali, greg in dates:
-                    if self.is_paused:
-                        break
-
                     if self.lang == "en":
                         print(f"\n--- Starting new cycle for date {jalali} at {time.strftime('%H:%M:%S')} ---")
                     else:
@@ -682,16 +559,7 @@ class TrainWatcherEngine:
                                 except:
                                     pass
 
-                # کامپایل و ویرایش بدون نوتیفیکیشن داشبورد زنده در تلگرام
                 await self.publish_dashboard(jalali)
 
-                # انتظار هوشمند بین چرخه‌ها با پایش لایو دستور بررسی فوری (Refresh) تلگرام
                 print(self.get_log("waiting", interval=interval))
-                for _ in range(interval):
-                    if not self.is_running or self.browser_restart_needed or self.is_paused:
-                        break
-                    if self.trigger_immediate_check:
-                        print("[*] Immediate manual check triggered via Telegram!")
-                        self.trigger_immediate_check = False
-                        break
-                    await asyncio.sleep(1)
+                await asyncio.sleep(interval)
