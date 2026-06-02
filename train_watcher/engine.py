@@ -76,24 +76,108 @@ class TrainWatcherEngine:
 
         self.lang = self.config.get("language", "en")
         print(self.get_log("config_ok"))
+        
+        # متغیرهای پایش وضعیت زنده داشبورد تلگرام
+        self.site_status_cache = {}  # ذخیره موقت وضعیت نمایشی سایت‌ها
+        self.site_states = {}        # ذخیره آخرین وضعیت فیزیکی سایت (ONLINE یا OFFLINE)
+        self.status_message_id = None # آی‌دی کارت گزارش برای ویرایش دائمی
 
     def get_log(self, key, **kwargs):
         text = LOGS[self.lang].get(key, "")
         return text.format(**kwargs)
 
-    async def send_notification(self, message, silent=False):
-        print(f"\n[ALERT] {message}\n")
+    async def send_telegram_api(self, method, params, silent=False):
+        """متد یکپارچه برقراری ارتباط با API تلگرام و بازگرداندن آی‌دی پیام"""
         token = self.config.get("telegram_token")
         chat_id = self.config.get("telegram_chat_id")
-        if token and chat_id:
-            text = urllib.parse.quote(message)
-            silent_param = "&disable_notification=true" if silent else ""
-            url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={text}{silent_param}"
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, lambda: urllib.request.urlopen(url, timeout=10))
-            except Exception as e:
-                print(self.get_log("telegram_err") + str(e))
+        if not token or not chat_id:
+            return None
+        try:
+            params["chat_id"] = chat_id
+            if silent:
+                params["disable_notification"] = "true"
+                
+            query_string = urllib.parse.urlencode(params)
+            url = f"https://api.telegram.org/bot{token}/{method}?{query_string}"
+            
+            def make_request():
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=12) as r:
+                    return json.loads(r.read().decode())
+                    
+            loop = asyncio.get_event_loop()
+            response_data = await loop.run_in_executor(None, make_request)
+            if response_data.get("ok"):
+                return response_data["result"].get("message_id")
+        except Exception as e:
+            print(f"[-] Telegram API Error ({method}): {e}")
+        return None
+
+    async def send_notification(self, message, silent=False):
+        """ارسال هشدارهای مجزا به تلگرام (مثل هشدار پیدا شدن بلیت یا قطعی اول بلیت)"""
+        print(f"\n[ALERT] {message}\n")
+        return await self.send_telegram_api("sendMessage", {"text": message}, silent=silent)
+
+    async def update_site_status(self, site_name, is_online, details_text):
+        """بروزرسانی وضعیت سایت در کش و صادر کردن هشدار باصدا در صورت تغییر فیزیکی اتصال"""
+        prev_state = self.site_states.get(site_name, "UNKNOWN")
+        current_state = "ONLINE" if is_online else "OFFLINE"
+        
+        status_symbol = "🟢" if is_online else "🔴"
+        self.site_status_cache[site_name] = f"{status_symbol} {site_name}: {details_text}"
+        self.site_states[site_name] = current_state
+        
+        # صادر کردن هشدار باصدا فقط زمانی که وضعیت سایت از وصل به قطع یا برعکس تغییر کند
+        if prev_state != "UNKNOWN" and prev_state != current_state:
+            if current_state == "OFFLINE":
+                alert_msg = f"🔴 ALERT: Connection LOST to {site_name}!\nDetails: {details_text}"
+            else:
+                alert_msg = f"🟢 ALERT: Connection RESTORED to {site_name}!\nStatus: {details_text}"
+            
+            # ارسال نوتیفیکیشن با صدا به تلگرام
+            await self.send_notification(alert_msg, silent=False)
+
+    async def publish_dashboard(self, current_date):
+        """کامپایل کردن داشبورد مانیتورینگ زنده و ویرایش دائمی پیام در تلگرام"""
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        origin = self.config.get("origin", "Unknown")
+        destination = self.config.get("destination", "Unknown")
+        
+        proxy_info = "Direct (No Proxy)"
+        custom_p = self.config.get("custom_proxy_url", "").strip()
+        if custom_p:
+            parsed = urllib.parse.urlparse(custom_p)
+            clean_ip = parsed.hostname if parsed.hostname else custom_p
+            proxy_info = f"Dedicated Iran Proxy ({clean_ip})"
+        elif self.proxy_url:
+            proxy_info = f"Rotated Free Proxy ({self.proxy_url})"
+            
+        dashboard_text = (
+            "📊 Train Watcher Dashboard\n"
+            "-----------------------------------\n"
+            f"🔄 Last Update: {timestamp}\n"
+            f"📍 Route: {origin} ⇄ {destination}\n"
+            f"📅 Target Date: {current_date}\n\n"
+            "🌐 Sites Status:\n"
+        )
+        
+        for site, status in self.site_status_cache.items():
+            dashboard_text += f"{status}\n"
+            
+        dashboard_text += f"\n🔌 Connection: {proxy_info}"
+        
+        # اگر اولین بار است، پیام جدید بفرست و آی‌دی آن را ذخیره کن
+        if self.status_message_id is None:
+            msg_id = await self.send_telegram_api("sendMessage", {"text": dashboard_text}, silent=True)
+            if msg_id:
+                self.status_message_id = msg_id
+        else:
+            # در دفعات بعد، همان پیام را بدون هیچ نوتیفیکیشنی ویرایش کن
+            await self.send_telegram_api(
+                "editMessageText", 
+                {"message_id": self.status_message_id, "text": dashboard_text}, 
+                silent=True
+            )
 
     async def fetch_and_test_iran_proxy(self):
         print(self.get_log("searching_proxy"))
@@ -200,12 +284,10 @@ class TrainWatcherEngine:
         return resolved
 
     async def is_captcha_or_blocked(self, page):
-        """اسکن فوق هوشمند محتوای صفحه برای تشخیص کپچا، Turnstile و بلاک‌های CDNها"""
         try:
             content = await page.content()
             content_lower = content.lower()
             
-            # نشانه‌های اختصاصی سیستم‌های ضدربات ایرانی و بین‌المللی
             anti_bot_signals = [
                 "cf-challenge", "cloudflare", "turnstile", "captcha", "recaptcha", "hcaptcha",
                 "کپچا", "کد امنیتی", "ربات نیستم", "چالش امنیتی", "ابر آروان", "arvancloud"
@@ -240,13 +322,23 @@ class TrainWatcherEngine:
         dest_data = CITIES[self.config["destination"]]
         interval = int(self.config.get("refresh_interval", "300"))
         
+        custom_proxy = self.config.get("custom_proxy_url", "").strip()
+        
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             
-            direct_context = await browser.new_context(
-                viewport={'width': 1280, 'height': 800},
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
+            if custom_proxy:
+                direct_context = await browser.new_context(
+                    viewport={'width': 1280, 'height': 800},
+                    user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    proxy={"server": custom_proxy}
+                )
+            else:
+                direct_context = await browser.new_context(
+                    viewport={'width': 1280, 'height': 800},
+                    user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                
             page_direct = await direct_context.new_page()
             
             proxy_url = None
@@ -263,33 +355,40 @@ class TrainWatcherEngine:
                     except:
                         pass
                 
-                p_url = await self.fetch_and_test_iran_proxy()
-                if p_url:
-                    proxy_url = p_url
-                    proxy_context = await browser.new_context(
-                        viewport={'width': 1280, 'height': 800},
-                        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        proxy={"server": p_url}
-                    )
-                    page_proxy = await proxy_context.new_page()
-                    proxy_failures = 0
-                    
-                    success_msg = f"🟢 Connected to active Iran HTTP proxy: {p_url}"
-                    print(success_msg)
-                    if self.config.get("send_errors_to_telegram", True):
-                        await self.send_notification(success_msg, silent=True)
-                else:
-                    proxy_url = None
+                if custom_proxy:
+                    proxy_url = custom_proxy
                     proxy_context = direct_context
                     page_proxy = await direct_context.new_page()
                     proxy_failures = 0
-                    
-                    warning_msg = self.get_log("no_proxy_warning")
-                    print(warning_msg)
-                    if self.config.get("send_errors_to_telegram", True):
-                        await self.send_notification(warning_msg, silent=True)
+                    print(f"[✓] Connected to CUSTOM PRIVATE proxy: {custom_proxy}")
+                else:
+                    p_url = await self.fetch_and_test_iran_proxy()
+                    if p_url:
+                        proxy_url = p_url
+                        proxy_context = await browser.new_context(
+                            viewport={'width': 1280, 'height': 800},
+                            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            proxy={"server": p_url}
+                        )
+                        page_proxy = await proxy_context.new_page()
+                        proxy_failures = 0
+                        
+                        success_msg = f"🟢 Connected to active Iran HTTP proxy: {p_url}"
+                        print(success_msg)
+                        if self.config.get("send_errors_to_telegram", True):
+                            await self.send_notification(success_msg, silent=True)
+                    else:
+                        proxy_url = None
+                        proxy_context = direct_context
+                        page_proxy = await direct_context.new_page()
+                        proxy_failures = 0
+                        
+                        warning_msg = self.get_log("no_proxy_warning")
+                        print(warning_msg)
+                        if self.config.get("send_errors_to_telegram", True):
+                            await self.send_notification(warning_msg, silent=True)
 
-            if self.config.get("use_proxy", True):
+            if self.config.get("use_proxy", True) or custom_proxy:
                 await refresh_proxy_connection()
             else:
                 proxy_url = None
@@ -303,7 +402,7 @@ class TrainWatcherEngine:
                     print(self.get_log("no_dates"))
                     break
                     
-                if self.config.get("use_proxy", True) and proxy_url is None:
+                if (self.config.get("use_proxy", True) or custom_proxy) and proxy_url is None:
                     print(self.get_log("proxy_retry_pre_cycle"))
                     await refresh_proxy_connection()
                 
@@ -321,31 +420,32 @@ class TrainWatcherEngine:
                             await page_proxy.goto(url_ali, wait_until="commit", timeout=25000)
                             await page_proxy.wait_for_timeout(4000)
                             
-                            # ۱. بررسی هوشمند وجود کپچا روی علی‌بابا
                             if await self.is_captcha_or_blocked(page_proxy):
-                                print("-> Alibaba: CAPTCHA or Block page detected!")
-                                if self.config.get("send_errors_to_telegram", True):
-                                    await self.send_notification(f"⚠️ Alibaba: CAPTCHA/Block detected! Rotating proxy...", silent=True)
-                                proxy_failures += 3 # تحریک فوری ربات جهت تعویض فوری آی‌پی پروکسی
+                                err_details = "Blocked by Captcha/Anti-Bot"
+                                print(f"-> Alibaba: {err_details}")
+                                await self.update_site_status("Alibaba", is_online=False, details_text=err_details)
+                                proxy_failures += 3
                             else:
                                 found = False
                                 for item in self.config.get("detect_words", []):
                                     if await self.check_detector(page_proxy, item):
                                         print(self.get_log("ticket_found", domain="Alibaba", label=item['label']))
-                                        await self.send_notification(f"Alibaba ticket found for {jalali}!\nLink: {url_ali}", silent=False)
+                                        # هشدار بلیت واقعی به صورت باصدا (جداگانه) ارسال می‌شود
+                                        await self.send_notification(f"🚨 TICKET FOUND on Alibaba for {jalali}!\nLink: {url_ali}", silent=False)
+                                        await self.update_site_status("Alibaba", is_online=True, details_text=f"Ticket Found ({item['label']})")
                                         found = True
                                         break
                                 if not found:
                                     print(self.get_log("sold_out", domain="Alibaba"))
+                                    await self.update_site_status("Alibaba", is_online=True, details_text="Sold Out")
                             proxy_failures = 0
                         except Exception as e:
-                            err_msg = self.get_log("conn_err", domain="Alibaba") + str(e)
-                            print(f"-> {err_msg}")
-                            if self.config.get("send_errors_to_telegram", True):
-                                await self.send_notification(f"⚠️ {err_msg}\nLink: {url_ali}", silent=True)
+                            err_msg = str(e)
+                            print(f"-> Error checking Alibaba: {err_msg}")
+                            await self.update_site_status("Alibaba", is_online=False, details_text=f"Connection Error: {err_msg[:35]}...")
                             proxy_failures += 1
                     
-                    if proxy_failures >= 3 and self.config.get("use_proxy", True):
+                    if proxy_failures >= 3 and self.config.get("use_proxy", True) and not custom_proxy:
                         print(self.get_log("proxy_fail_detect"))
                         await refresh_proxy_connection()
 
@@ -357,26 +457,26 @@ class TrainWatcherEngine:
                             await page_direct.goto(url_fly, wait_until="commit", timeout=25000)
                             await page_direct.wait_for_timeout(4000)
                             
-                            # بررسی کپچا روی آی‌پی مستقیم سرور مجازی
                             if await self.is_captcha_or_blocked(page_direct):
-                                print("-> FlyToday: CAPTCHA/Block detected on VPS direct IP!")
-                                if self.config.get("send_errors_to_telegram", True):
-                                    await self.send_notification(f"⚠️ FlyToday: CAPTCHA/Block detected on VPS direct IP!", silent=True)
+                                err_details = "Blocked by Captcha/Anti-Bot"
+                                print(f"-> FlyToday: {err_details}")
+                                await self.update_site_status("FlyToday", is_online=False, details_text=err_details)
                             else:
                                 found = False
                                 for item in self.config.get("detect_words", []):
                                     if await self.check_detector(page_direct, item):
                                         print(self.get_log("ticket_found", domain="FlyToday", label=item['label']))
-                                        await self.send_notification(f"FlyToday ticket found for {greg}!\nLink: {url_fly}", silent=False)
+                                        await self.send_notification(f"🚨 TICKET FOUND on FlyToday for {greg}!\nLink: {url_fly}", silent=False)
+                                        await self.update_site_status("FlyToday", is_online=True, details_text=f"Ticket Found ({item['label']})")
                                         found = True
                                         break
                                 if not found:
                                     print(self.get_log("sold_out", domain="FlyToday"))
+                                    await self.update_site_status("FlyToday", is_online=True, details_text="Sold Out")
                         except Exception as e:
-                            err_msg = self.get_log("conn_err", domain="FlyToday") + str(e)
-                            print(f"-> {err_msg}")
-                            if self.config.get("send_errors_to_telegram", True):
-                                await self.send_notification(f"⚠️ {err_msg}", silent=True)
+                            err_msg = str(e)
+                            print(f"-> Error checking FlyToday: {err_msg}")
+                            await self.update_site_status("FlyToday", is_online=False, details_text=f"Connection Error: {err_msg[:35]}...")
 
                     # MrBilit Check
                     if self.config.get("enable_mrbilit", True):
@@ -386,26 +486,26 @@ class TrainWatcherEngine:
                             await page_direct.goto(url_bil, wait_until="commit", timeout=25000)
                             await page_direct.wait_for_timeout(4000)
                             
-                            # بررسی کپچا روی آی‌پی مستقیم مستربلیت
                             if await self.is_captcha_or_blocked(page_direct):
-                                print("-> MrBilit: CAPTCHA/Block detected on VPS direct IP!")
-                                if self.config.get("send_errors_to_telegram", True):
-                                    await self.send_notification(f"⚠️ MrBilit: CAPTCHA/Block detected on VPS direct IP!", silent=True)
+                                err_details = "Blocked by Captcha/Anti-Bot"
+                                print(f"-> MrBilit: {err_details}")
+                                await self.update_site_status("MrBilit", is_online=False, details_text=err_details)
                             else:
                                 found = False
                                 for item in self.config.get("detect_words", []):
                                     if await self.check_detector(page_direct, item):
                                         print(self.get_log("ticket_found", domain="MrBilit", label=item['label']))
-                                        await self.send_notification(f"MrBilit ticket found for {jalali}!\nLink: {url_bil}", silent=False)
+                                        await self.send_notification(f"🚨 TICKET FOUND on MrBilit for {jalali}!\nLink: {url_bil}", silent=False)
+                                        await self.update_site_status("MrBilit", is_online=True, details_text=f"Ticket Found ({item['label']})")
                                         found = True
                                         break
                                 if not found:
                                     print(self.get_log("sold_out", domain="MrBilit"))
+                                    await self.update_site_status("MrBilit", is_online=True, details_text="Sold Out")
                         except Exception as e:
-                            err_msg = self.get_log("conn_err", domain="MrBilit") + str(e)
-                            print(f"-> {err_msg}")
-                            if self.config.get("send_errors_to_telegram", True):
-                                await self.send_notification(f"⚠️ {err_msg}", silent=True)
+                            err_msg = str(e)
+                            print(f"-> Error checking MrBilit: {err_msg}")
+                            await self.update_site_status("MrBilit", is_online=False, details_text=f"Connection Error: {err_msg[:35]}...")
 
                     # Custom URLs Check (SafarMarket and Raja)
                     for i, item in enumerate(self.config.get("custom_urls", [])):
@@ -417,6 +517,8 @@ class TrainWatcherEngine:
                         domain = url.strip().lower().split("/")[0]
                         resolved_url = self.resolve_custom_url(url, jalali, greg, origin_data, dest_data)
                         print(self.get_log("checking", domain=domain))
+                        
+                        site_display_name = "Raja" if domain == "raja.ir" else ("SafarMarket" if domain == "safarmarket.com" else domain)
                         
                         target_page = None
                         try:
@@ -435,34 +537,39 @@ class TrainWatcherEngine:
                             await target_page.goto(resolved_url, wait_until="commit", timeout=25000)
                             await target_page.wait_for_timeout(4000)
                             
-                            # بررسی وجود کپچا روی رجا یا آدرس‌های سفارشی دیگر
                             if await self.is_captcha_or_blocked(target_page):
-                                print(f"-> {domain}: CAPTCHA or Block page detected!")
-                                if self.config.get("send_errors_to_telegram", True):
-                                    await self.send_notification(f"⚠️ {domain}: CAPTCHA/Block page detected!", silent=True)
-                                if domain == "raja.ir":
-                                    proxy_failures += 3 # تعویض آی‌پی پروکسی در صورت بلاک شدن توسط رجا
+                                err_details = "Blocked by Captcha/Anti-Bot"
+                                print(f"-> {domain}: {err_details}")
+                                await self.update_site_status(site_display_name, is_online=False, details_text=err_details)
+                                if domain == "raja.ir" and not custom_proxy:
+                                    proxy_failures += 3
                             else:
                                 found = False
                                 for d_item in self.config.get("detect_words", []):
                                     if await self.check_detector(target_page, d_item):
                                         print(self.get_log("ticket_found", domain=domain, label=d_item['label']))
-                                        await self.send_notification(f"{domain} ticket found for {jalali}!\nLink: {resolved_url}", silent=False)
+                                        await self.send_notification(f"🚨 TICKET FOUND on {site_display_name} for {jalali}!\nLink: {resolved_url}", silent=False)
+                                        await self.update_site_status(site_display_name, is_online=True, details_text=f"Ticket Found ({d_item['label']})")
                                         found = True
                                         break
                                 if not found:
                                     print(self.get_log("sold_out", domain=domain))
+                                    await self.update_site_status(site_display_name, is_online=True, details_text="Sold Out")
                         except Exception as e:
-                            err_msg = self.get_log("conn_err", domain=domain) + str(e)
-                            print(f"-> {err_msg}")
-                            if self.config.get("send_errors_to_telegram", True):
-                                await self.send_notification(f"⚠️ {err_msg}", silent=True)
+                            err_msg = str(e)
+                            print(f"-> Error checking {domain}: {err_msg}")
+                            await self.update_site_status(site_display_name, is_online=False, details_text=f"Connection Error: {err_msg[:35]}...")
+                            if domain == "raja.ir":
+                                proxy_failures += 1
                         finally:
                             if domain == "raja.ir" and target_page:
                                 try:
                                     await target_page.close()
                                 except:
                                     pass
+
+                # کامپایل و ویرایش دائمی پیام گزارش داشبورد در تلگرام پس از اتمام سیکل
+                await self.publish_dashboard(jalali)
 
                 print(self.get_log("waiting", interval=interval))
                 await asyncio.sleep(interval)
