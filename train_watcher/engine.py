@@ -125,7 +125,7 @@ class TrainWatcherEngine:
                     req = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req, timeout=8) as r:
                         return r.read().decode().strip().split("\n")
-                raw_proxies = await loop.run_in_executor(None, fetch_fallback)
+                raw_proxies = await loop.run_in_executor(None, fallback_url)
                 for p in raw_proxies:
                     p = p.strip()
                     if p and ":" in p:
@@ -198,6 +198,25 @@ class TrainWatcherEngine:
         if not resolved.startswith("http://") and not resolved.startswith("https://"):
             resolved = "https://" + resolved
         return resolved
+
+    async def is_captcha_or_blocked(self, page):
+        """اسکن فوق هوشمند محتوای صفحه برای تشخیص کپچا، Turnstile و بلاک‌های CDNها"""
+        try:
+            content = await page.content()
+            content_lower = content.lower()
+            
+            # نشانه‌های اختصاصی سیستم‌های ضدربات ایرانی و بین‌المللی
+            anti_bot_signals = [
+                "cf-challenge", "cloudflare", "turnstile", "captcha", "recaptcha", "hcaptcha",
+                "کپچا", "کد امنیتی", "ربات نیستم", "چالش امنیتی", "ابر آروان", "arvancloud"
+            ]
+            
+            for signal in anti_bot_signals:
+                if signal in content_lower:
+                    return True
+        except:
+            pass
+        return False
 
     async def check_detector(self, page, item):
         word = item["query"]
@@ -299,19 +318,25 @@ class TrainWatcherEngine:
                         url_ali = f"https://www.alibaba.ir/train/{origin_data['alibaba']}-{dest_data['alibaba']}?adult=1&child=0&infant=0&departing={jalali}&ticketType=Family"
                         print(self.get_log("checking", domain="Alibaba"))
                         try:
-                            # بهینه‌سازی: استفاده از استراتژی commit برای اتصال پربازده روی پروکسی
                             await page_proxy.goto(url_ali, wait_until="commit", timeout=25000)
                             await page_proxy.wait_for_timeout(4000)
                             
-                            found = False
-                            for item in self.config.get("detect_words", []):
-                                if await self.check_detector(page_proxy, item):
-                                    print(self.get_log("ticket_found", domain="Alibaba", label=item['label']))
-                                    await self.send_notification(f"Alibaba ticket found for {jalali}!\nLink: {url_ali}", silent=False)
-                                    found = True
-                                    break
-                            if not found:
-                                print(self.get_log("sold_out", domain="Alibaba"))
+                            # ۱. بررسی هوشمند وجود کپچا روی علی‌بابا
+                            if await self.is_captcha_or_blocked(page_proxy):
+                                print("-> Alibaba: CAPTCHA or Block page detected!")
+                                if self.config.get("send_errors_to_telegram", True):
+                                    await self.send_notification(f"⚠️ Alibaba: CAPTCHA/Block detected! Rotating proxy...", silent=True)
+                                proxy_failures += 3 # تحریک فوری ربات جهت تعویض فوری آی‌پی پروکسی
+                            else:
+                                found = False
+                                for item in self.config.get("detect_words", []):
+                                    if await self.check_detector(page_proxy, item):
+                                        print(self.get_log("ticket_found", domain="Alibaba", label=item['label']))
+                                        await self.send_notification(f"Alibaba ticket found for {jalali}!\nLink: {url_ali}", silent=False)
+                                        found = True
+                                        break
+                                if not found:
+                                    print(self.get_log("sold_out", domain="Alibaba"))
                             proxy_failures = 0
                         except Exception as e:
                             err_msg = self.get_log("conn_err", domain="Alibaba") + str(e)
@@ -329,18 +354,24 @@ class TrainWatcherEngine:
                         url_fly = f"https://www.flytoday.ir/train/{origin_data['flytoday_en']}-{dest_data['flytoday_en']}?origin={origin_data['flytoday_id']}&destination={dest_data['flytoday_id']}&departureDate={greg}&adt=1"
                         print(self.get_log("checking", domain="FlyToday"))
                         try:
-                            # بهینه‌سازی: استفاده از commit
                             await page_direct.goto(url_fly, wait_until="commit", timeout=25000)
                             await page_direct.wait_for_timeout(4000)
-                            found = False
-                            for item in self.config.get("detect_words", []):
-                                if await self.check_detector(page_direct, item):
-                                    print(self.get_log("ticket_found", domain="FlyToday", label=item['label']))
-                                    await self.send_notification(f"FlyToday ticket found for {greg}!\nLink: {url_fly}", silent=False)
-                                    found = True
-                                    break
-                            if not found:
-                                print(self.get_log("sold_out", domain="FlyToday"))
+                            
+                            # بررسی کپچا روی آی‌پی مستقیم سرور مجازی
+                            if await self.is_captcha_or_blocked(page_direct):
+                                print("-> FlyToday: CAPTCHA/Block detected on VPS direct IP!")
+                                if self.config.get("send_errors_to_telegram", True):
+                                    await self.send_notification(f"⚠️ FlyToday: CAPTCHA/Block detected on VPS direct IP!", silent=True)
+                            else:
+                                found = False
+                                for item in self.config.get("detect_words", []):
+                                    if await self.check_detector(page_direct, item):
+                                        print(self.get_log("ticket_found", domain="FlyToday", label=item['label']))
+                                        await self.send_notification(f"FlyToday ticket found for {greg}!\nLink: {url_fly}", silent=False)
+                                        found = True
+                                        break
+                                if not found:
+                                    print(self.get_log("sold_out", domain="FlyToday"))
                         except Exception as e:
                             err_msg = self.get_log("conn_err", domain="FlyToday") + str(e)
                             print(f"-> {err_msg}")
@@ -352,18 +383,24 @@ class TrainWatcherEngine:
                         url_bil = f"https://mrbilit.com/trains/{origin_data['mrbilit_en']}-{dest_data['mrbilit_en']}?departureDate={jalali}"
                         print(self.get_log("checking", domain="MrBilit"))
                         try:
-                            # بهینه‌سازی: استفاده از commit
                             await page_direct.goto(url_bil, wait_until="commit", timeout=25000)
                             await page_direct.wait_for_timeout(4000)
-                            found = False
-                            for item in self.config.get("detect_words", []):
-                                if await self.check_detector(page_direct, item):
-                                    print(self.get_log("ticket_found", domain="MrBilit", label=item['label']))
-                                    await self.send_notification(f"MrBilit ticket found for {jalali}!\nLink: {url_bil}", silent=False)
-                                    found = True
-                                    break
-                            if not found:
-                                print(self.get_log("sold_out", domain="MrBilit"))
+                            
+                            # بررسی کپچا روی آی‌پی مستقیم مستربلیت
+                            if await self.is_captcha_or_blocked(page_direct):
+                                print("-> MrBilit: CAPTCHA/Block detected on VPS direct IP!")
+                                if self.config.get("send_errors_to_telegram", True):
+                                    await self.send_notification(f"⚠️ MrBilit: CAPTCHA/Block detected on VPS direct IP!", silent=True)
+                            else:
+                                found = False
+                                for item in self.config.get("detect_words", []):
+                                    if await self.check_detector(page_direct, item):
+                                        print(self.get_log("ticket_found", domain="MrBilit", label=item['label']))
+                                        await self.send_notification(f"MrBilit ticket found for {jalali}!\nLink: {url_bil}", silent=False)
+                                        found = True
+                                        break
+                                if not found:
+                                    print(self.get_log("sold_out", domain="MrBilit"))
                         except Exception as e:
                             err_msg = self.get_log("conn_err", domain="MrBilit") + str(e)
                             print(f"-> {err_msg}")
@@ -390,25 +427,31 @@ class TrainWatcherEngine:
                                 
                             if domain in ["raja.ir", "safarmarket.com"] and domain not in target_page.url:
                                 try:
-                                    # بهینه‌سازی: استفاده از commit
                                     await target_page.goto(f"https://{domain}", wait_until="commit", timeout=25000)
                                     await asyncio.sleep(2)
                                 except:
                                     pass
                                     
-                            # بهینه‌سازی: استفاده از commit
                             await target_page.goto(resolved_url, wait_until="commit", timeout=25000)
                             await target_page.wait_for_timeout(4000)
                             
-                            found = False
-                            for d_item in self.config.get("detect_words", []):
-                                if await self.check_detector(target_page, d_item):
-                                    print(self.get_log("ticket_found", domain=domain, label=d_item['label']))
-                                    await self.send_notification(f"{domain} ticket found for {jalali}!\nLink: {resolved_url}", silent=False)
-                                    found = True
-                                    break
-                            if not found:
-                                print(self.get_log("sold_out", domain=domain))
+                            # بررسی وجود کپچا روی رجا یا آدرس‌های سفارشی دیگر
+                            if await self.is_captcha_or_blocked(target_page):
+                                print(f"-> {domain}: CAPTCHA or Block page detected!")
+                                if self.config.get("send_errors_to_telegram", True):
+                                    await self.send_notification(f"⚠️ {domain}: CAPTCHA/Block page detected!", silent=True)
+                                if domain == "raja.ir":
+                                    proxy_failures += 3 # تعویض آی‌پی پروکسی در صورت بلاک شدن توسط رجا
+                            else:
+                                found = False
+                                for d_item in self.config.get("detect_words", []):
+                                    if await self.check_detector(target_page, d_item):
+                                        print(self.get_log("ticket_found", domain=domain, label=d_item['label']))
+                                        await self.send_notification(f"{domain} ticket found for {jalali}!\nLink: {resolved_url}", silent=False)
+                                        found = True
+                                        break
+                                if not found:
+                                    print(self.get_log("sold_out", domain=domain))
                         except Exception as e:
                             err_msg = self.get_log("conn_err", domain=domain) + str(e)
                             print(f"-> {err_msg}")
