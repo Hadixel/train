@@ -77,15 +77,38 @@ class TrainWatcherEngine:
         self.lang = self.config.get("language", "en")
         print(self.get_log("config_ok"))
         
+        # ساختاردهی اولیه کش برای جلوگیری از اختلال در اولین اجرا
         self.site_status_cache = {}
         self.site_states = {}
         self.status_message_id = None
+
+        if self.config.get("enable_alibaba", True):
+            self.site_status_cache["Alibaba"] = "⚪ Alibaba: Waiting..."
+            self.site_states["Alibaba"] = "UNKNOWN"
+            
+        if self.config.get("enable_flytoday", True):
+            self.site_status_cache["FlyToday"] = "⚪ FlyToday: Waiting..."
+            self.site_states["FlyToday"] = "UNKNOWN"
+            
+        if self.config.get("enable_mrbilit", True):
+            self.site_status_cache["MrBilit"] = "⚪ MrBilit: Waiting..."
+            self.site_states["MrBilit"] = "UNKNOWN"
+            
+        for item in self.config.get("custom_urls", []):
+            url = item["url"]
+            is_enabled = self.config.get("custom_urls_state", {}).get(url, True)
+            if is_enabled:
+                domain = url.strip().lower().split("/")[0]
+                name = "Raja" if domain == "raja.ir" else ("SafarMarket" if domain == "safarmarket.com" else domain)
+                self.site_status_cache[name] = f"⚪ {name}: Waiting..."
+                self.site_states[name] = "UNKNOWN"
 
     def get_log(self, key, **kwargs):
         text = LOGS[self.lang].get(key, "")
         return text.format(**kwargs)
 
     async def send_telegram_api(self, method, params, silent=False):
+        """ارسال پیشرفته اطلاعات به تلگرام تحت متد استاندارد POST و ساختار امن JSON"""
         token = self.config.get("telegram_token")
         chat_id = self.config.get("telegram_chat_id")
         if not token or not chat_id:
@@ -93,13 +116,21 @@ class TrainWatcherEngine:
         try:
             params["chat_id"] = chat_id
             if silent:
-                params["disable_notification"] = "true"
-                
-            query_string = urllib.parse.urlencode(params)
-            url = f"https://api.telegram.org/bot{token}/{method}?{query_string}"
+                params["disable_notification"] = True
+            
+            url = f"https://api.telegram.org/bot{token}/{method}"
+            # تبدیل پارامترها به بایت‌های ساختاریافته‌ی JSON برای پایداری ۱۰۰ درصدی متون طولانی و اموجی‌ها
+            data_bytes = json.dumps(params).encode("utf-8")
             
             def make_request():
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                req = urllib.request.Request(
+                    url, 
+                    data=data_bytes, 
+                    headers={
+                        'User-Agent': 'Mozilla/5.0',
+                        'Content-Type': 'application/json'
+                    }
+                )
                 with urllib.request.urlopen(req, timeout=12) as r:
                     return json.loads(r.read().decode())
                     
@@ -112,10 +143,12 @@ class TrainWatcherEngine:
         return None
 
     async def send_notification(self, message, silent=False):
+        """ارسال هشدارهای مجزا به تلگرام (مثل هشدار پیدا شدن بلیت یا قطعی اول بلیت)"""
         print(f"\n[ALERT] {message}\n")
         return await self.send_telegram_api("sendMessage", {"text": message}, silent=silent)
 
     async def update_site_status(self, site_name, is_online, details_text):
+        """بروزرسانی وضعیت سایت در کش و صادر کردن هشدار باصدا در صورت تغییر فیزیکی اتصال"""
         prev_state = self.site_states.get(site_name, "UNKNOWN")
         current_state = "ONLINE" if is_online else "OFFLINE"
         
@@ -123,15 +156,18 @@ class TrainWatcherEngine:
         self.site_status_cache[site_name] = f"{status_symbol} {site_name}: {details_text}"
         self.site_states[site_name] = current_state
         
+        # صادر کردن هشدار باصدا فقط زمانی که وضعیت سایت از وصل به قطع یا برعکس تغییر کند
         if prev_state != "UNKNOWN" and prev_state != current_state:
             if current_state == "OFFLINE":
                 alert_msg = f"🔴 ALERT: Connection LOST to {site_name}!\nDetails: {details_text}"
             else:
                 alert_msg = f"🟢 ALERT: Connection RESTORED to {site_name}!\nStatus: {details_text}"
             
+            # ارسال نوتیفیکیشن با صدا به تلگرام
             await self.send_notification(alert_msg, silent=False)
 
     async def publish_dashboard(self, current_date):
+        """کامپایل کردن داشبورد مانیتورینگ زنده و ویرایش دائمی پیام در تلگرام"""
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         origin = self.config.get("origin", "Unknown")
         destination = self.config.get("destination", "Unknown")
@@ -159,11 +195,13 @@ class TrainWatcherEngine:
             
         dashboard_text += f"\n🔌 Connection: {proxy_info}"
         
+        # اگر اولین بار است، پیام جدید بفرست و آی‌دی آن را ذخیره کن
         if self.status_message_id is None:
             msg_id = await self.send_telegram_api("sendMessage", {"text": dashboard_text}, silent=True)
             if msg_id:
                 self.status_message_id = msg_id
         else:
+            # در دفعات بعد، همان پیام را بدون هیچ نوتیفیکیشنی ویرایش کن
             await self.send_telegram_api(
                 "editMessageText", 
                 {"message_id": self.status_message_id, "text": dashboard_text}, 
@@ -200,7 +238,6 @@ class TrainWatcherEngine:
                     req = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req, timeout=8) as r:
                         return r.read().decode().strip().split("\n")
-                # اصلاح‌شده: اجرای تابع دریافت پشتیبان به جای متغیر آدرس متنی
                 raw_proxies = await loop.run_in_executor(None, fetch_fallback)
                 for p in raw_proxies:
                     p = p.strip()
@@ -388,6 +425,11 @@ class TrainWatcherEngine:
                 page_proxy = await direct_context.new_page()
                 print("[*] Running in direct connection mode (No proxy).")
             
+            # ارسال کارت گزارش اولیهٔ داشبورد در همان ثانیه اول راه‌اندازی سرور جهت تایید فعال بودن ربات
+            dates_init = self.get_date_list()
+            if dates_init:
+                await self.publish_dashboard(dates_init[0][0])
+                
             while True:
                 dates = self.get_date_list()
                 if not dates:
@@ -559,6 +601,7 @@ class TrainWatcherEngine:
                                 except:
                                     pass
 
+                # انتشار زنده داشبورد مانیتورینگ
                 await self.publish_dashboard(jalali)
 
                 print(self.get_log("waiting", interval=interval))
