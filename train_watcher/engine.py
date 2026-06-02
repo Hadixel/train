@@ -299,8 +299,9 @@ class TrainWatcherEngine:
                         url_ali = f"https://www.alibaba.ir/train/{origin_data['alibaba']}-{dest_data['alibaba']}?adult=1&child=0&infant=0&departing={jalali}&ticketType=Family"
                         print(self.get_log("checking", domain="Alibaba"))
                         try:
-                            await page_proxy.goto(url_ali, wait_until="domcontentloaded", timeout=25000)
-                            await page_proxy.wait_for_timeout(3000)
+                            # بهینه‌سازی: استفاده از استراتژی commit برای اتصال پربازده روی پروکسی
+                            await page_proxy.goto(url_ali, wait_until="commit", timeout=25000)
+                            await page_proxy.wait_for_timeout(4000)
                             
                             found = False
                             for item in self.config.get("detect_words", []):
@@ -328,8 +329,9 @@ class TrainWatcherEngine:
                         url_fly = f"https://www.flytoday.ir/train/{origin_data['flytoday_en']}-{dest_data['flytoday_en']}?origin={origin_data['flytoday_id']}&destination={dest_data['flytoday_id']}&departureDate={greg}&adt=1"
                         print(self.get_log("checking", domain="FlyToday"))
                         try:
-                            await page_direct.goto(url_fly, wait_until="domcontentloaded", timeout=25000)
-                            await page_direct.wait_for_timeout(3000)
+                            # بهینه‌سازی: استفاده از commit
+                            await page_direct.goto(url_fly, wait_until="commit", timeout=25000)
+                            await page_direct.wait_for_timeout(4000)
                             found = False
                             for item in self.config.get("detect_words", []):
                                 if await self.check_detector(page_direct, item):
@@ -350,8 +352,9 @@ class TrainWatcherEngine:
                         url_bil = f"https://mrbilit.com/trains/{origin_data['mrbilit_en']}-{dest_data['mrbilit_en']}?departureDate={jalali}"
                         print(self.get_log("checking", domain="MrBilit"))
                         try:
-                            await page_direct.goto(url_bil, wait_until="domcontentloaded", timeout=25000)
-                            await page_direct.wait_for_timeout(3000)
+                            # بهینه‌سازی: استفاده از commit
+                            await page_direct.goto(url_bil, wait_until="commit", timeout=25000)
+                            await page_direct.wait_for_timeout(4000)
                             found = False
                             for item in self.config.get("detect_words", []):
                                 if await self.check_detector(page_direct, item):
@@ -387,13 +390,15 @@ class TrainWatcherEngine:
                                 
                             if domain in ["raja.ir", "safarmarket.com"] and domain not in target_page.url:
                                 try:
-                                    await target_page.goto(f"https://{domain}", wait_until="domcontentloaded", timeout=25000)
+                                    # بهینه‌سازی: استفاده از commit
+                                    await target_page.goto(f"https://{domain}", wait_until="commit", timeout=25000)
                                     await asyncio.sleep(2)
                                 except:
                                     pass
                                     
-                            await target_page.goto(resolved_url, wait_until="domcontentloaded", timeout=25000)
-                            await target_page.wait_for_timeout(3000)
+                            # بهینه‌سازی: استفاده از commit
+                            await target_page.goto(resolved_url, wait_until="commit", timeout=25000)
+                            await target_page.wait_for_timeout(4000)
                             
                             found = False
                             for d_item in self.config.get("detect_words", []):
