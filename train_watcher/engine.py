@@ -125,7 +125,7 @@ class TrainWatcherEngine:
                     req = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req, timeout=8) as r:
                         return r.read().decode().strip().split("\n")
-                raw_proxies = await loop.run_in_executor(None, fallback_url)
+                raw_proxies = await loop.run_in_executor(None, fetch_fallback)
                 for p in raw_proxies:
                     p = p.strip()
                     if p and ":" in p:
@@ -380,7 +380,6 @@ class TrainWatcherEngine:
                         
                         target_page = None
                         try:
-                            # ساخت تب موازی مخصوص رجا به صورت ناهمگام با استفاده از کلمه کلیدی await
                             if domain == "raja.ir":
                                 target_page = await proxy_context.new_page()
                             else:
@@ -411,7 +410,6 @@ class TrainWatcherEngine:
                             if self.config.get("send_errors_to_telegram", True):
                                 await self.send_notification(f"⚠️ {err_msg}", silent=True)
                         finally:
-                            # بستن اصولی تب رجا برای آزادسازی رم (RAM) سرور Railway پس از بررسی
                             if domain == "raja.ir" and target_page:
                                 try:
                                     await target_page.close()
